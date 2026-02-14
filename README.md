@@ -1,11 +1,15 @@
-# Kafka-Based News Notification Service
+
+## Kafka-Based News Notification Service
 
 A scalable, event-driven **News Notification Service** built using **Apache Kafka**, **Docker**, and **PostgreSQL**.
-This system publishes news events and routes them to multiple notification channels such as **Email**, **SMS**, and **Push Notifications** with retry and dead-letter handling.
+
+This system publishes news events and routes them to multiple notification channels (**Email, SMS, Push**) with retry handling and Dead Letter Topic (DLT) support.
+
+> ⚠️ All channels (Email, SMS, Push) are statically configured and applied to every news event.
 
 ---
 
-## 🚀 Tech Stack
+### 🚀 Tech Stack
 
 * **Message Broker**: Apache Kafka
 * **Containerization**: Docker
@@ -13,33 +17,41 @@ This system publishes news events and routes them to multiple notification chann
 * **Kafka Monitoring UI**: Kafka UI
 * **Database**: PostgreSQL
 * **DB Management UI**: pgAdmin
-* **Shared Database**: Centralized DB for notification tracking and status storage
+* **Shared Database**: Used for notification tracking (custom structure)
 
 ---
 
-# 📌 System Overview
+## 📌 System Overview
 
-This system implements an asynchronous notification processing pipeline using Kafka.
+This system implements an asynchronous, event-driven notification pipeline.
 
 ### 🔄 Flow Diagram
 
 ```
-Client → Publish API → Kafka Topic → Router Service → 
-[Email | SMS | Push Services] → DB Update
-                                   ↓
-                              Retry (3 times)
-                                   ↓
-                           Dead Letter Topic (DLT)
+Client → Publish API → Kafka (news-topic) → Router Service →
+Email Service
+SMS Service
+Push Service
+        ↓
+Retry (3 times)
+        ↓
+Dead Letter Topic (notification-dlt)
 ```
 
 ---
 
-# 🏗 Architecture Components
+## 🏗 Architecture Components
 
-## 1️⃣ Publish API
+### 1️⃣ Publish API
 
 * Accepts incoming news payload.
-* Publishes the message to a Kafka topic (`news-topic`).
+* Publishes message to Kafka topic: `news-topic`.
+* Channels are NOT passed in request.
+* System automatically sends notification to:
+
+  * Email
+  * SMS
+  * Push
 
 ### Example Request
 
@@ -48,78 +60,111 @@ POST /publish
 {
   "newsId": "123",
   "title": "Breaking News",
-  "content": "Important announcement",
-  "channels": ["EMAIL", "SMS", "PUSH"]
+  "content": "Important announcement"
 }
 ```
 
 ---
 
-## 2️⃣ Kafka Topic
+### 2️⃣ Kafka Topics
 
 * `news-topic` → Receives published news.
 * `notification-dlt` → Stores failed notifications after retries.
 
 ---
 
-## 3️⃣ Router Service
+### 3️⃣ Router Service
 
 * Consumes messages from `news-topic`.
-* Determines delivery channels (Email/SMS/Push).
-* Reads **10,000 users** from database.
-* Processes users **batch-wise (100 per batch)**.
-* Publishes to respective channel services.
+* Automatically routes to:
+
+  * Email Service
+  * SMS Service
+  * Push Service
+* Fetches 10,000 users.
+* Processes users in **batch size of 100**.
+* Publishes notification messages per channel.
 
 ---
 
-## 4️⃣ Notification Services
+### 4️⃣ Notification Services (Email / SMS / Push)
 
-Each channel (Email/SMS/Push):
+Each service:
 
-* Processes notifications
-* On success:
+* Consumes channel-specific messages.
+* Attempts delivery.
+* If success:
 
-  * Stores success status in DB
-* On failure:
+  * Stores status in DB.
+* If failure:
 
-  * Retries up to **3 times**
-  * If still fails:
+  * Retries up to 3 times.
+  * After 3 failures:
 
-    * Publishes to `notification-dlt`
-    * Stores failure record in DB
-
----
-
-# 🔁 Retry & Dead Letter Strategy
-
-| Attempt          | Action                                                 |
-| ---------------- | ------------------------------------------------------ |
-| 1                | Try sending notification                               |
-| 2                | Retry                                                  |
-| 3                | Retry                                                  |
-| After 3 Failures | Move to Dead Letter Topic (DLT) + Mark as FAILED in DB |
+    * Moves message to `notification-dlt`.
 
 ---
 
-# 🗄 Database Schema (Sample)
+## 🔁 Retry & Dead Letter Strategy
 
-### notifications
+| Attempt          | Action                       |
+| ---------------- | ---------------------------- |
+| 1                | Initial delivery attempt     |
+| 2                | Retry                        |
+| 3                | Retry                        |
+| After 3 Failures | Publish to Dead Letter Topic |
 
-| Column      | Type      | Description        |
-| ----------- | --------- | ------------------ |
-| id          | UUID      | Unique ID          |
-| news_id     | VARCHAR   | News reference     |
-| user_id     | VARCHAR   | User ID            |
-| channel     | VARCHAR   | EMAIL / SMS / PUSH |
-| status      | VARCHAR   | SUCCESS / FAILED   |
-| retry_count | INT       | Retry attempts     |
-| created_at  | TIMESTAMP | Timestamp          |
+This prevents infinite retries and ensures system stability.
 
 ---
 
-# 🐳 Running the Project
+## ⚙️ Execution Process (Step-by-Step)
 
-## 1️⃣ Start Services
+### Step 1: Client Calls Publish API
+
+* News payload is received.
+* Message is produced to Kafka `news-topic`.
+
+### Step 2: Router Service Consumes Event
+
+* Router reads the news event.
+* Fetches user list.
+* Splits users into batches of 100.
+
+### Step 3: Channel Distribution
+
+* Router publishes messages to:
+
+  * Email topic
+  * SMS topic
+  * Push topic
+
+### Step 4: Notification Processing
+
+* Each service processes its messages.
+* Delivery attempt is made.
+* Status is recorded.
+
+### Step 5: Retry Handling
+
+* If delivery fails:
+
+  * Retry up to 3 times.
+* If still failing:
+
+  * Send to `notification-dlt`.
+
+### Step 6: Monitoring & Observability
+
+* Use Kafka UI to monitor topics.
+* Check logs for delivery status.
+* Review DLT messages for failure analysis.
+
+---
+
+## 🐳 Running the Project
+
+### Start All Services
 
 ```bash
 docker-compose up -d
@@ -136,23 +181,22 @@ This will start:
 
 ---
 
-## 2️⃣ Kafka UI
-
-Access Kafka UI:
+### Kafka UI Access
 
 ```
 http://localhost:8080
 ```
 
-* View topics
-* Monitor consumers
-* Inspect messages
+Monitor:
+
+* Topics
+* Consumers
+* Message flow
+* Dead Letter Topic
 
 ---
 
-## 3️⃣ PostgreSQL
-
-Database runs on:
+### PostgreSQL
 
 ```
 localhost:5432
@@ -166,271 +210,42 @@ http://localhost:5050
 
 ---
 
-# ⚙️ Configuration
-
-Environment variables example:
-
-```env
-KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-POSTGRES_HOST=postgres
-POSTGRES_PORT=5432
-POSTGRES_DB=newsdb
-POSTGRES_USER=admin
-POSTGRES_PASSWORD=admin
-```
-
----
-
-# 📊 Performance Design
+## 📊 Performance Design
 
 * Batch processing (100 users per batch)
-* Horizontal scalability (multiple router instances)
-* Kafka partitioning support
+* Horizontal scaling support
+* Kafka partitioning
 * Asynchronous processing
-* Retry mechanism with DLT fallback
+* Retry with DLT fallback
 
 ---
 
-# 🔒 Reliability Features
+## 🔒 Reliability Features
 
 * At-least-once delivery
-* Retry with backoff
-* Dead Letter Topic
-* Persistent storage in PostgreSQL
-* Consumer group support
+* Controlled retry (max 3)
+* Dead Letter Topic isolation
+* Fault-tolerant message handling
+* Consumer group scaling
 
 ---
 
-# 📂 Project Structure
-
-```
-news-notification-service/
-│
-├── publish-service/
-├── router-service/
-├── email-service/
-├── sms-service/
-├── push-service/
-├── docker-compose.yml
-└── README.md
-```
-
----
-
-# 🧪 Testing
-
-1. Start services
-2. Call Publish API
-3. Monitor:
-
-   * Kafka UI
-   * Database records
-   * Logs
-4. Verify success & failed messages
-
----
-
-# 📈 Scalability
+## 📈 Scalability Strategy
 
 * Increase Kafka partitions
-* Scale router & notification services horizontally
-* Optimize DB indexing for large user sets
-* Implement caching for user fetch
-
-Here’s a clear explanation of the **implemented features** in your Kafka-based News Notification Service and **why each feature is important**.
-
----
-
-# ✅ Implemented Features & Their Purpose
+* Run multiple router instances
+* Scale notification services independently
+* Optimize user fetch queries
+* Add caching layer if needed
 
 ---
 
-## 1️⃣ Event-Driven Architecture (Using Apache Kafka)
+## 🏆 System Qualities Achieved
 
-### ✅ What is implemented
-
-* Publish API pushes news events to Kafka.
-* Router service consumes and processes asynchronously.
-* Decoupled services (Email, SMS, Push).
-
-### 🎯 Why this feature?
-
-* **Loose coupling** between services.
-* **High scalability** (independent scaling).
-* **Better fault tolerance**.
-* Handles large volume (10,000+ users) efficiently.
-
----
-
-## 2️⃣ Publish API
-
-### ✅ What is implemented
-
-* REST API to accept news.
-* Publishes event to `news-topic`.
-
-### 🎯 Why this feature?
-
-* Provides a **single entry point**.
-* Keeps producer logic separate from notification logic.
-* Makes system extensible for future integrations.
-
----
-
-## 3️⃣ Router-Based Channel Distribution
-
-### ✅ What is implemented
-
-* Router consumes news event.
-* Identifies required channels (Email / SMS / Push).
-* Routes messages accordingly.
-
-### 🎯 Why this feature?
-
-* Centralized **decision-making layer**.
-* Makes adding new channels easy.
-* Reduces duplication of routing logic.
-
----
-
-## 4️⃣ Batch Processing (100 Users per Batch)
-
-### ✅ What is implemented
-
-* Reads 10,000 users.
-* Processes in batches of 100.
-
-### 🎯 Why this feature?
-
-* Prevents memory overload.
-* Improves throughput.
-* Controls DB and network load.
-* Supports large-scale user processing.
-
-Without batching, system could crash or slow down significantly.
-
----
-
-## 5️⃣ Retry Mechanism (3 Attempts)
-
-### ✅ What is implemented
-
-* Retry notification up to 3 times.
-* Track retry count.
-* Update status in DB.
-
-### 🎯 Why this feature?
-
-* Handles **temporary failures** (network issues, SMTP timeout, etc.).
-* Increases delivery success rate.
-* Prevents immediate message loss.
-
----
-
-## 6️⃣ Dead Letter Topic (DLT)
-
-### ✅ What is implemented
-
-* Failed after 3 retries → moved to `notification-dlt`.
-* Failure stored in database.
-
-### 🎯 Why this feature?
-
-* Prevents infinite retry loops.
-* Enables later analysis & reprocessing.
-* Improves system reliability and observability.
-
-This is a critical production-grade pattern.
-
----
-
-## 7️⃣ Status Persistence in PostgreSQL
-
-### ✅ What is implemented
-
-* Store SUCCESS / FAILED status.
-* Store retry count.
-* Track per user & channel.
-
-### 🎯 Why this feature?
-
-* Provides audit trail.
-* Enables reporting & analytics.
-* Supports debugging.
-* Required for compliance in enterprise systems.
-
----
-
-## 8️⃣ Containerized Deployment (Using Docker + Docker Compose)
-
-### ✅ What is implemented
-
-* Kafka, DB, services run in containers.
-* One-command startup (`docker-compose up`).
-
-### 🎯 Why this feature?
-
-* Easy local setup.
-* Environment consistency.
-* Simplifies deployment.
-* Supports CI/CD pipelines.
-
----
-
-## 9️⃣ Kafka Monitoring with Kafka UI
-
-### ✅ What is implemented
-
-* View topics.
-* Monitor consumers.
-* Inspect messages.
-
-### 🎯 Why this feature?
-
-* Debug message flow.
-* Monitor lag.
-* Validate retry/DLT behavior.
-
-Essential for troubleshooting distributed systems.
-
----
-
-## 🔟 Shared Database Design
-
-### ✅ What is implemented
-
-* Central DB used by all services.
-* Shared notification tracking table.
-
-### 🎯 Why this feature?
-
-* Single source of truth.
-* Avoids data inconsistency.
-* Easier reporting.
-
----
-
-# 🔥 Architectural Benefits Achieved
-
-| Feature          | Business Benefit                  |
-| ---------------- | --------------------------------- |
-| Kafka            | High throughput & decoupling      |
-| Batch Processing | Efficient large user handling     |
-| Retry Logic      | Improved reliability              |
-| DLT              | Production-grade failure handling |
-| DB Persistence   | Audit & reporting                 |
-| Containerization | Easy deployment                   |
-| Router Pattern   | Scalable architecture             |
-
----
-
-# 🏆 Overall System Qualities Achieved
-
-* ✅ Scalability
+* ✅ High Throughput
+* ✅ Horizontal Scalability
 * ✅ Fault Tolerance
-* ✅ Reliability
+* ✅ Reliable Delivery
 * ✅ Observability
-* ✅ Extensibility
 * ✅ Production-Ready Design
-* ✅ High Throughput Processing
 
