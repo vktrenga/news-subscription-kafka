@@ -2,51 +2,81 @@ from kafka import KafkaConsumer, KafkaProducer
 import json
 import random
 import time
-from shared_lib.repository import save_event
+from shared_lib.repository import EventRepository
 
-consumer = KafkaConsumer(
-    "push.topic",
-    bootstrap_servers="kafka:9092",
-    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-    group_id="push_group",
-    auto_offset_reset="earliest"
-)
+class NotificationService:
 
-producer = KafkaProducer(
-    bootstrap_servers="kafka:9092",
-    value_serializer=lambda v: json.dumps(v).encode("utf-8")
-)
+    MAX_RETRY = 3
+    repo = EventRepository()
 
-processed_ids = set()
-MAX_RETRY = 3
+    def __init__(self):
+        self.consumer = KafkaConsumer(
+            "push.topic",
+            bootstrap_servers="kafka:9092",
+            value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+            group_id="notification_group",
+            auto_offset_reset="earliest",
+            enable_auto_commit=False
+        )
 
-for message in consumer:
-    print("[PUSH.TOPIC RECEIVED] ->", message.value)
-    data = message.value
-    save_event(
-        "push-service",
-        message.topic,
-        message.partition,
-        message.offset,
-        str(message.key),
-        data
-    )
-    if data["notification_id"] in processed_ids:
-        continue
+        self.producer = KafkaProducer(
+            bootstrap_servers="kafka:9092",
+            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            acks="all",
+            retries=5
+        )
 
-    try:
-        if random.choice([False, True]):
-            raise Exception("Simulated Failure")
+    def send_push_notification(self, users, title, content):
+        print(f"Sending Push to {len(users)} users | {title} {content}")
+        time.sleep(0.2)
+     
+        print("Push sent successfully ✅")
 
-        print("[PUSH.TOPIC SENT] ->", data)
-        processed_ids.add(data["notification_id"])
+    def start(self):
+        print("Notification Service Started 🚀")
 
-    except Exception as e:
-        print("[PUSH.TOPIC FAILED] ->", e)
+        for message in self.consumer:
+            data = message.value
 
-        if data["retry"] < MAX_RETRY:
-            data["retry"] += 1
-            time.sleep(1)
-            producer.send("push.topic", data)
-        else:
-            producer.send("push.topic.dlq", data)
+            try:
+                self.send_push_notification(
+                    users=data["users"],
+                    title=data["title"],
+                    content=data["content"]
+                )
+                self.repo.save_event(
+                    service_name="push-service",
+                    topic=message.topic,
+                    partition=message.partition,
+                    kafka_offset=message.offset,
+                    event_key=str(message.key),
+                    payload=data,
+                    status='Done'
+                )
+                self.consumer.commit()
+                print("Push Offset committed ✅\n")
+
+            except Exception as e:
+                print("Push failed ❌", e)
+
+                if data["retry"] < self.MAX_RETRY:
+                    data["retry"] += 1
+                    self.producer.send("notification.topic", data)
+                else:
+                    self.producer.send("notification.topic.dlq", data)
+                    self.repo.save_event(
+                        service_name="push-service",
+                        topic=message.topic,
+                        partition=message.partition,
+                        kafka_offset=message.offset,
+                        event_key=str(message.key),
+                        payload=data,
+                        status='FAILED'
+                    )
+
+                self.producer.flush()
+                self.consumer.commit()
+
+
+if __name__ == "__main__":
+    NotificationService().start()

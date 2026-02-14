@@ -1,54 +1,99 @@
-from kafka import KafkaConsumer, KafkaProducer
 import json
-import random
 import time
-import sys
-from shared_lib.repository import save_event
+from kafka import KafkaConsumer, KafkaProducer
+from shared_lib.repository import EventRepository
 
-consumer = KafkaConsumer(
-    "email.topic",
-    bootstrap_servers="kafka:9092",
-    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-    group_id="email_group",
-    auto_offset_reset="earliest"
-)
 
-producer = KafkaProducer(
-    bootstrap_servers="kafka:9092",
-    value_serializer=lambda v: json.dumps(v).encode("utf-8")
-)
+class EmailService:
 
-processed_ids = set()
-MAX_RETRY = 3
+    MAX_RETRY = 3
+    repo = EventRepository()
 
-for message in consumer:
-    print("[EMAIL.TOPIC RECEIVED] ->", message.value)
-    data = message.value
-    save_event(
-        "email-service",
-        message.topic,
-        message.partition,
-        message.offset,
-        str(message.key),
-        data
-    )
-    if data["notification_id"] in processed_ids:
-        continue
+    def __init__(self):
+        self.consumer = KafkaConsumer(
+            "email.topic",
+            bootstrap_servers="kafka:9092",
+            value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+            group_id="email_group",
+            auto_offset_reset="earliest",
+            enable_auto_commit=False
+        )
 
-    try:
-        if random.choice([False, True]):
-            raise Exception("Simulated Failure")
+        self.producer = KafkaProducer(
+            bootstrap_servers="kafka:9092",
+            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            acks="all",
+            retries=5
+        )
+                
 
-        print("[EMAIL.TOPIC SENT] ->", data)
-        processed_ids.add(data["notification_id"])
+    def send_bulk_email(self, users, title, content):
+        """
+        Replace this with real email provider API (SES / SendGrid / SMTP)
+        """
+        print(f"Sending email to {len(users)} users | Title: {title}")
 
-    except Exception as e:
-        print("[EMAIL.TOPIC FAILED] ->", e)
+        # simulate email sending delay
+        time.sleep(0.5)
 
-        if data["retry"] < MAX_RETRY:
-            data["retry"] += 1
-            time.sleep(1)
-            producer.send("email.topic", data)
-        else:
-            pass
-            producer.send("email.topic.dlq", data)
+        print("Email sent successfully ✅")
+
+    def start(self):
+        print("Email Service Started 🚀")
+
+        for message in self.consumer:
+            data = message.value
+
+            print("[EMAIL RECEIVED] ->", data)
+
+            try:
+                self.send_bulk_email(
+                    users=data["users"],
+                    title=data["title"],
+                    content=data["content"]
+                )
+
+                # commit only after successful send
+
+                
+
+                self.repo.save_event(
+                    service_name="email-service",
+                    topic=message.topic,
+                    partition=message.partition,
+                    kafka_offset=message.offset,
+                    event_key=str(message.key),
+                    payload=data,
+                    status='Done'
+                )
+                self.consumer.commit()
+
+                print("Offset committed ✅\n")
+
+            except Exception as e:
+                print("Email sending failed ❌", e)
+
+                if data["retry"] < self.MAX_RETRY:
+                    data["retry"] += 1
+                    print(f"Retrying... Attempt {data['retry']}")
+                    self.producer.send("email.topic", data)
+                else:
+                    print("Max retry reached. Sending to DLQ")
+                    self.producer.send("email.topic.dlq", data)
+                    self.repo.save_event(
+                        service_name="email-service",
+                        topic=message.topic,
+                        partition=message.partition,
+                        kafka_offset=message.offset,
+                        event_key=str(message.key),
+                        payload=data,
+                        status='FAILED'
+                    )
+
+                self.producer.flush()
+                self.consumer.commit()
+
+
+if __name__ == "__main__":
+    service = EmailService()
+    service.start()
